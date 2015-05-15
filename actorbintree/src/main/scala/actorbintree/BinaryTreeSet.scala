@@ -88,6 +88,7 @@ class BinaryTreeSet extends Actor with ActorLogging {
 
     case CopyFinished =>
       log.info(s"GC finished. pending: ${pendingQueue.size}")
+      root ! PoisonPill
       root = newRoot
       pendingQueue foreach { newRoot ! _ }
       pendingQueue = Queue.empty[Operation]
@@ -184,7 +185,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor wit
   def stop(expected: Set[ActorRef], insertConfirmed: Boolean) = {
       if (insertConfirmed && expected.isEmpty) {
 //        log.info("removed")
-        self ! PoisonPill
+//        self ! PoisonPill
         context.parent ! CopyFinished
         context.become(normal)
 //        context.stop(self)
