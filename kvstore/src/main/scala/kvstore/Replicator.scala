@@ -2,7 +2,10 @@ package kvstore
 
 import akka.actor.Props
 import akka.actor.Actor
+import akka.actor.ActorLogging
 import akka.actor.ActorRef
+import akka.actor.Cancellable
+import akka.util.Timeout
 import scala.concurrent.duration._
 
 object Replicator {
@@ -15,7 +18,7 @@ object Replicator {
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
 
-class Replicator(val replica: ActorRef) extends Actor {
+class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
   import Replicator._
   import Replica._
   import context.dispatcher
@@ -28,6 +31,7 @@ class Replicator(val replica: ActorRef) extends Actor {
   var acks = Map.empty[Long, (ActorRef, Replicate)]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
+  var cancellable: Option[Cancellable] = None
 
   var _seqCounter = 0L
   def nextSeq = {
@@ -37,9 +41,31 @@ class Replicator(val replica: ActorRef) extends Actor {
   }
 
 
-  /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case _ =>
+    case Replicate(key, valueOption, id) =>
+      val seq = nextSeq
+      acks += seq -> (sender, Replicate(key, valueOption, id))
+      val snapshot = Snapshot(key, valueOption, seq)
+      pending = pending :+ snapshot
+      if (cancellable == None) {
+        cancellable = Option(context.system.scheduler.scheduleOnce(100.millis, self, Timeout))
+      }
+
+    case Timeout =>
+      if (!pending.isEmpty) {
+        pending foreach { replica ! _ }
+        cancellable = Option(context.system.scheduler.scheduleOnce(100.millis, self, Timeout))
+      }
+
+    case SnapshotAck(key, seq) =>
+      pending = pending filter { snapshot => key != snapshot.key }
+      if (pending.isEmpty) {
+        cancellable map { _.cancel }
+        cancellable = None
+      }
+      val (client, replicate) = acks(seq)
+      acks -= seq
+      client ! Replicated(key, replicate.id)
   }
 
 }
