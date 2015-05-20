@@ -12,6 +12,7 @@ import akka.actor.PoisonPill
 import akka.actor.OneForOneStrategy
 import akka.actor.SupervisorStrategy
 import akka.util.Timeout
+import akka.actor.ActorLogging
 
 object Replica {
   sealed trait Operation {
@@ -30,7 +31,7 @@ object Replica {
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
 
-class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
+class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with ActorLogging {
   import Replica._
   import Replicator._
   import Persistence._
@@ -46,6 +47,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
+  arbiter ! Join
 
   def receive = {
     case JoinedPrimary   => context.become(leader)
@@ -54,6 +56,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   /* TODO Behavior for  the leader role. */
   val leader: Receive = {
+    case Insert(key, value, id) =>
+      kv += key -> value
+      sender ! OperationAck(id)
+    case Remove(key, id) =>
+      kv -= key
+      sender ! OperationAck(id)
+    case Get(key, id) =>
+      sender ! GetResult(key, kv get key, id)
     case _ =>
   }
 
