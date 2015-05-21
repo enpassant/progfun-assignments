@@ -7,6 +7,7 @@ import akka.actor.ActorRef
 import akka.actor.Cancellable
 import akka.actor.Terminated
 import akka.util.Timeout
+import akka.actor.PoisonPill
 import scala.concurrent.duration._
 
 object Replicator {
@@ -15,6 +16,8 @@ object Replicator {
 
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
   case class SnapshotAck(key: String, seq: Long)
+
+  object Stop
 
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
@@ -69,8 +72,18 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       acks -= seq
       client ! Replicated(key, replicate.id)
 
+    case Stop =>
+      log.info("PoisonPill")
+      context.system.scheduler.scheduleOnce(500.millis, self, PoisonPill)
+      cancellable map { _.cancel }
+      cancellable = None
+      pending foreach { s =>
+        val (client, replicate) = acks(s.seq)
+        client ! Replicated(s.key, replicate.id)
+      }
+
     case Terminated(`replica`) =>
-      context.stop(self)
+      self ! Stop
   }
 
 }

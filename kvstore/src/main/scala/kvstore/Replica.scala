@@ -6,7 +6,6 @@ import scala.collection.immutable.Queue
 import akka.actor.SupervisorStrategy.Restart
 import scala.annotation.tailrec
 import akka.pattern.{ ask, pipe }
-import akka.actor.Terminated
 import scala.concurrent.duration._
 import akka.actor.PoisonPill
 import akka.actor.OneForOneStrategy
@@ -87,12 +86,28 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
       sender ! GetResult(key, kv get key, id)
 
     case Replicas(replicas) =>
-      val newReplicators = ((
+      val newReplicatorsMap = ((
         replicas filterNot { case a: ActorRef => (a == self) || (secondaries contains a) }) map {
           case a: ActorRef => a -> context.actorOf(Props(new Replicator(a)))
         }).toMap
-      secondaries = secondaries ++ newReplicators
-      replicators = replicators ++ newReplicators map { case (a, r: ActorRef) => r }
+      val newReplicators = newReplicatorsMap map { case (a, r: ActorRef) => r }
+      secondaries = secondaries ++ newReplicatorsMap
+
+      val (newSecondaries, removed) = secondaries partition { case (k, v) => replicas contains k }
+      secondaries = newSecondaries
+      replicators = secondaries.values.toSet
+
+      removed foreach {
+        case (k, v) =>
+          v ! Stop
+      }
+
+      for {
+        replicator <- newReplicators
+        (key, value) <- kv
+      } {
+        replicator ! Replicate(key, Some(value), 0)
+      }
   }
 
   val replica: Receive = {

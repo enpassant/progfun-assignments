@@ -1,6 +1,7 @@
 package kvstore
 
-import akka.actor.{ActorRef, Actor}
+import akka.actor.{ActorRef, Actor, ActorLogging}
+import akka.actor.Terminated
 import scala.collection.immutable
 
 object Arbiter {
@@ -15,7 +16,7 @@ object Arbiter {
   case class Replicas(replicas: Set[ActorRef])
 }
 
-class Arbiter extends Actor {
+class Arbiter extends Actor with ActorLogging {
   import Arbiter._
   var leader: Option[ActorRef] = None
   var replicas = Set.empty[ActorRef]
@@ -30,6 +31,11 @@ class Arbiter extends Actor {
         replicas += sender
         sender ! JoinedSecondary
       }
+      context.watch(sender)
+      leader foreach (_ ! Replicas(replicas))
+
+    case Terminated(replica) =>
+      replicas -= sender
       leader foreach (_ ! Replicas(replicas))
   }
 
