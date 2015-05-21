@@ -31,7 +31,7 @@ class Arbiter extends Actor with ActorLogging {
         replicas += sender
         sender ! JoinedSecondary
       }
-      context.watch(sender)
+//      context.watch(sender)
       leader foreach (_ ! Replicas(replicas))
 
     case Terminated(replica) =>

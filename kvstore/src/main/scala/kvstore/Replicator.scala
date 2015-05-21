@@ -17,7 +17,7 @@ object Replicator {
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
   case class SnapshotAck(key: String, seq: Long)
 
-  object Stop
+  object StopReplicator
 
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
@@ -44,10 +44,11 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
     ret
   }
 
-  context.watch(replica)
+//  context.watch(replica)
 
   def receive: Receive = {
     case Replicate(key, valueOption, id) =>
+      log.info("Replicate")
       val seq = nextSeq
       acks += seq -> (sender, Replicate(key, valueOption, id))
       val snapshot = Snapshot(key, valueOption, seq)
@@ -72,8 +73,7 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       acks -= seq
       client ! Replicated(key, replicate.id)
 
-    case Stop =>
-      log.info("PoisonPill")
+    case StopReplicator =>
       context.system.scheduler.scheduleOnce(500.millis, self, PoisonPill)
       cancellable map { _.cancel }
       cancellable = None
@@ -83,7 +83,7 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       }
 
     case Terminated(`replica`) =>
-      self ! Stop
+      self ! StopReplicator
   }
 
 }

@@ -18,6 +18,8 @@ import Replicator._
 import Persistence._
 import scala.concurrent.Future
 import scala.util.{Success, Failure}
+import akka.actor.OneForOneStrategy
+import akka.actor.SupervisorStrategy._
 
 object Replica {
   sealed trait Operation {
@@ -39,6 +41,11 @@ object Replica {
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with ActorLogging {
   import context.dispatcher
 
+  override val supervisorStrategy =
+    OneForOneStrategy() {
+      case _: Exception                =>
+        Resume
+  }
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
@@ -51,7 +58,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   var nextSeq = 0L
 
-  val persister = context.actorOf(persistenceProps)
+  var persister = context.actorOf(persistenceProps)
 
   arbiter ! Join
 
@@ -99,13 +106,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
       removed foreach {
         case (k, v) =>
-          v ! Stop
+          v ! StopReplicator
       }
 
       for {
         replicator <- newReplicators
         (key, value) <- kv
       } {
+        log.info(key)
         replicator ! Replicate(key, Some(value), 0)
       }
   }
