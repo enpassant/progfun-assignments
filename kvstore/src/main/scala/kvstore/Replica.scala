@@ -12,7 +12,11 @@ import akka.actor.PoisonPill
 import akka.actor.OneForOneStrategy
 import akka.actor.SupervisorStrategy
 import akka.util.Timeout
+import akka.actor.ReceiveTimeout
 import akka.actor.ActorLogging
+import Replica._
+import Replicator._
+import Persistence._
 
 object Replica {
   sealed trait Operation {
@@ -32,9 +36,6 @@ object Replica {
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with ActorLogging {
-  import Replica._
-  import Replicator._
-  import Persistence._
   import context.dispatcher
 
   /*
@@ -48,6 +49,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   var replicators = Set.empty[ActorRef]
 
   var nextSeq = 0L
+
+  val persister = context.actorOf(persistenceProps)
 
   arbiter ! Join
 
@@ -82,9 +85,28 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
           }
           nextSeq += 1
         }
-        sender ! SnapshotAck(key, seq)
+        val persist = Persist(key, valueOption, seq)
+        val client = sender
+        val senderToPersiter = context.actorOf(Props(new SenderToPersiter(persister, client, persist)))
       }
   }
 
+}
+
+class SenderToPersiter(val persister: ActorRef, val client: ActorRef, val msg: Persist)
+  extends Actor with ActorLogging
+{
+  context.setReceiveTimeout(100.milliseconds)
+
+  persister ! msg
+
+  def receive = {
+    case Persisted(key, id) =>
+      client ! SnapshotAck(key, id)
+      context.stop(self)
+
+    case ReceiveTimeout =>
+      persister ! msg
+  }
 }
 
