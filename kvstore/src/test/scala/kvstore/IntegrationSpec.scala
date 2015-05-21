@@ -34,10 +34,9 @@ class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
 
   test("case1: Verifies proper function of the whole system") {
     val arbiter = system.actorOf(Props(new Arbiter))
-    val persistence = TestProbe()
     val primary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case1-primary")
-    val secondaryA = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case1-secondaryA")
     val client = session(primary)
+    val secondaryA = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case1-secondaryA")
 
     val setId = client.set("foo", "bar")
     client.waitAck(setId)
@@ -62,8 +61,8 @@ class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
     val arbiter = system.actorOf(Props(new Arbiter))
     val persistence = TestProbe()
     val primary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = true)), "case2-primary")
-    val secondaryA = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = true)), "case2-secondaryA")
     val client = session(primary)
+    val secondaryA = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = true)), "case2-secondaryA")
 
     val setId = client.set("foo", "bar")
     client.waitAck(setId)

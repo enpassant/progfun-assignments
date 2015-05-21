@@ -63,8 +63,13 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   arbiter ! Join
 
   def receive = {
-    case JoinedPrimary   => context.become(leader)
-    case JoinedSecondary => context.become(replica)
+    case JoinedPrimary   =>
+      log.info("JoinedPrimary")
+      context.become(leader)
+
+    case JoinedSecondary =>
+      log.info("JoinedSecondary")
+      context.become(replica)
   }
 
   def replicateAndSend(client: ActorRef, key: String, valueOption: Option[String], id: Long) = {
@@ -80,6 +85,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   val leader: Receive = {
     case Insert(key, value, id) =>
+      log.info("Insert")
       kv += key -> value
       replicateAndSend(sender, key, Some(value), id)
 
