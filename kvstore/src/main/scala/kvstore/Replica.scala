@@ -17,6 +17,8 @@ import akka.actor.ActorLogging
 import Replica._
 import Replicator._
 import Persistence._
+import scala.concurrent.Future
+import scala.util.{Success, Failure}
 
 object Replica {
   sealed trait Operation {
@@ -59,17 +61,38 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
     case JoinedSecondary => context.become(replica)
   }
 
+  def replicateAndSend(client: ActorRef, key: String, valueOption: Option[String], id: Long) = {
+    implicit val timeout = Timeout(1.seconds)
+    val response = Future.traverse(replicators) { _ ? Replicate(key, valueOption, id) }
+    response onComplete {
+      case Success(_) =>
+        context.actorOf(Props(new PrimarySender(persister, client, Persist(key, valueOption, id))))
+      case Failure(_) =>
+        client ! OperationFailed(id)
+    }
+  }
+
   val leader: Receive = {
     case Insert(key, value, id) =>
       kv += key -> value
-      sender ! OperationAck(id)
+      replicateAndSend(sender, key, Some(value), id)
 
     case Remove(key, id) =>
       kv -= key
-      sender ! OperationAck(id)
+      val persist = Persist(key, None, id)
+      val client = sender
+      replicateAndSend(sender, key, None, id)
 
     case Get(key, id) =>
       sender ! GetResult(key, kv get key, id)
+
+    case Replicas(replicas) =>
+      val newReplicators = ((
+        replicas filterNot { case a: ActorRef => (a == self) || (secondaries contains a) }) map {
+          case a: ActorRef => a -> context.actorOf(Props(new Replicator(a)))
+        }).toMap
+      secondaries = secondaries ++ newReplicators
+      replicators = replicators ++ newReplicators map { case (a, r: ActorRef) => r }
   }
 
   val replica: Receive = {
@@ -87,26 +110,60 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
         }
         val persist = Persist(key, valueOption, seq)
         val client = sender
-        val senderToPersiter = context.actorOf(Props(new SenderToPersiter(persister, client, persist)))
+        context.actorOf(Props(new SecondarySender(persister, client, persist)))
       }
   }
 
 }
 
-class SenderToPersiter(val persister: ActorRef, val client: ActorRef, val msg: Persist)
-  extends Actor with ActorLogging
+class SecondarySender(val persister: ActorRef, val client: ActorRef,
+  val persist: Persist) extends Actor with ActorLogging
 {
-  context.setReceiveTimeout(100.milliseconds)
+  import context.dispatcher
 
-  persister ! msg
+  context.setReceiveTimeout(100.milliseconds)
+  val cancellable = context.system.scheduler.scheduleOnce(1.seconds, self, Timeout)
+
+  persister ! persist
 
   def receive = {
     case Persisted(key, id) =>
       client ! SnapshotAck(key, id)
+      cancellable.cancel
       context.stop(self)
 
     case ReceiveTimeout =>
-      persister ! msg
+      persister ! persist
+
+    case Timeout =>
+      cancellable.cancel
+      context.stop(self)
+  }
+}
+
+class PrimarySender(val persister: ActorRef, val client: ActorRef,
+  val persist: Persist) extends Actor with ActorLogging
+{
+  import context.dispatcher
+
+  context.setReceiveTimeout(100.milliseconds)
+  val cancellable = context.system.scheduler.scheduleOnce(1.seconds, self, Timeout)
+
+  persister ! persist
+
+  def receive = {
+    case Persisted(key, id) =>
+      client ! OperationAck(id)
+      cancellable.cancel
+      context.stop(self)
+
+    case ReceiveTimeout =>
+      persister ! persist
+
+    case Timeout =>
+      client ! OperationFailed(persist.id)
+      cancellable.cancel
+      context.stop(self)
   }
 }
 

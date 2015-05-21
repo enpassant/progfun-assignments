@@ -5,6 +5,7 @@ import akka.actor.Actor
 import akka.actor.ActorLogging
 import akka.actor.ActorRef
 import akka.actor.Cancellable
+import akka.actor.Terminated
 import akka.util.Timeout
 import scala.concurrent.duration._
 
@@ -40,6 +41,7 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
     ret
   }
 
+  context.watch(replica)
 
   def receive: Receive = {
     case Replicate(key, valueOption, id) =>
@@ -66,6 +68,9 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
       val (client, replicate) = acks(seq)
       acks -= seq
       client ! Replicated(key, replicate.id)
+
+    case Terminated(`replica`) =>
+      context.stop(self)
   }
 
 }
