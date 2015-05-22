@@ -20,6 +20,7 @@ import scala.concurrent.Future
 import scala.util.{Success, Failure}
 import akka.actor.OneForOneStrategy
 import akka.actor.SupervisorStrategy._
+import scala.concurrent.ExecutionContext
 
 object Replica {
   sealed trait Operation {
@@ -64,28 +65,30 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   def receive = {
     case JoinedPrimary   =>
-      log.info("JoinedPrimary")
+      secondaries += self -> context.actorOf(Props(new Replicator(self)))
+      replicators = secondaries.values.toSet
       context.become(leader)
 
     case JoinedSecondary =>
-      log.info("JoinedSecondary")
       context.become(replica)
   }
 
   def replicateAndSend(client: ActorRef, key: String, valueOption: Option[String], id: Long) = {
     implicit val timeout = Timeout(1.seconds)
-    val response = Future.traverse(replicators) { _ ? Replicate(key, valueOption, id) }
+    val futures = (replicators map { r: ActorRef =>
+      r ? Replicate(key, valueOption, id)
+    })
+    val response = Future.sequence(futures)
     response onComplete {
       case Success(_) =>
-        context.actorOf(Props(new PrimarySender(persister, client, Persist(key, valueOption, id))))
-      case Failure(_) =>
+        client ! OperationAck(id)
+      case Failure(failure) =>
         client ! OperationFailed(id)
     }
   }
 
-  val leader: Receive = {
+  val operations: Receive = {
     case Insert(key, value, id) =>
-      log.info("Insert")
       kv += key -> value
       replicateAndSend(sender, key, Some(value), id)
 
@@ -95,12 +98,9 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
       val client = sender
       replicateAndSend(sender, key, None, id)
 
-    case Get(key, id) =>
-      sender ! GetResult(key, kv get key, id)
-
     case Replicas(replicas) =>
       val newReplicatorsMap = ((
-        replicas filterNot { case a: ActorRef => (a == self) || (secondaries contains a) }) map {
+        replicas filterNot { case a: ActorRef => (secondaries contains a) }) map {
           case a: ActorRef => a -> context.actorOf(Props(new Replicator(a)))
         }).toMap
       val newReplicators = newReplicatorsMap map { case (a, r: ActorRef) => r }
@@ -119,7 +119,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
         replicator <- newReplicators
         (key, value) <- kv
       } {
-        log.info(key)
         replicator ! Replicate(key, Some(value), 0)
       }
   }
@@ -143,6 +142,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
       }
   }
 
+  val leader: Receive = operations orElse replica
+
 }
 
 class SecondarySender(val persister: ActorRef, val client: ActorRef,
@@ -151,7 +152,7 @@ class SecondarySender(val persister: ActorRef, val client: ActorRef,
   import context.dispatcher
 
   context.setReceiveTimeout(100.milliseconds)
-  val cancellable = context.system.scheduler.scheduleOnce(1.seconds, self, Timeout)
+  val cancellable = context.system.scheduler.scheduleOnce(2.seconds, self, Timeout)
 
   persister ! persist
 
@@ -165,32 +166,6 @@ class SecondarySender(val persister: ActorRef, val client: ActorRef,
       persister ! persist
 
     case Timeout =>
-      cancellable.cancel
-      context.stop(self)
-  }
-}
-
-class PrimarySender(val persister: ActorRef, val client: ActorRef,
-  val persist: Persist) extends Actor with ActorLogging
-{
-  import context.dispatcher
-
-  context.setReceiveTimeout(100.milliseconds)
-  val cancellable = context.system.scheduler.scheduleOnce(1.seconds, self, Timeout)
-
-  persister ! persist
-
-  def receive = {
-    case Persisted(key, id) =>
-      client ! OperationAck(id)
-      cancellable.cancel
-      context.stop(self)
-
-    case ReceiveTimeout =>
-      persister ! persist
-
-    case Timeout =>
-      client ! OperationFailed(persist.id)
       cancellable.cancel
       context.stop(self)
   }

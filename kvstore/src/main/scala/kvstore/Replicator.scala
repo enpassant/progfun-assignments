@@ -50,7 +50,6 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
 
   def receive: Receive = {
     case Replicate(key, valueOption, id) =>
-      log.info("Replicate")
       val seq = nextSeq
       acks += seq -> (sender, Replicate(key, valueOption, id))
       val snapshot = Snapshot(key, valueOption, seq)

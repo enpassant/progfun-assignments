@@ -6,7 +6,7 @@ import org.scalatest.Matchers
 import org.scalatest.FunSuiteLike
 import akka.actor.ActorSystem
 import scala.concurrent.duration._
-import kvstore.Arbiter.{ JoinedSecondary, Join }
+import kvstore.Arbiter.{ JoinedSecondary, Join, JoinedPrimary, Replicas }
 import kvstore.Persistence.{ Persisted, Persist }
 import kvstore.Replicator.{ SnapshotAck, Snapshot, Replicate }
 import org.scalactic.ConversionCheckedTripleEquals
@@ -59,4 +59,29 @@ class Step3_ReplicatorSpec extends TestKit(ActorSystem("Step3ReplicatorSpec"))
     secondary.reply(SnapshotAck("k1", 0L))
   }
 
+  test("case3: Primary and secondaries must work in concert when persistence and communication to secondaries is unreliable") {
+    val arbiter = TestProbe()
+    val primary = system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = true)), "case3-primary")
+    val user = session(primary)
+    val secondary = TestProbe()
+
+    arbiter.expectMsg(Join)
+    arbiter.send(primary, JoinedPrimary)
+
+    user.setAcked("k1", "v1")
+    arbiter.send(primary, Replicas(Set(primary, secondary.ref)))
+
+    secondary.expectMsg(Snapshot("k1", Some("v1"), 0L))
+    secondary.reply(SnapshotAck("k1", 0L))
+
+    val ack1 = user.set("k1", "v2")
+    secondary.expectMsg(Snapshot("k1", Some("v2"), 1L))
+    secondary.reply(SnapshotAck("k1", 1L))
+    user.waitAck(ack1)
+
+    val ack2 = user.remove("k1")
+    secondary.expectMsg(Snapshot("k1", None, 2L))
+    secondary.reply(SnapshotAck("k1", 2L))
+    user.waitAck(ack2)
+  }
 }

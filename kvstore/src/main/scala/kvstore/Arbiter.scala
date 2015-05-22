@@ -23,7 +23,6 @@ class Arbiter extends Actor with ActorLogging {
 
   def receive = {
     case Join =>
-      log.info("Join")
       if (leader.isEmpty) {
         leader = Some(sender)
         replicas += sender
